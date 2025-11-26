@@ -2,7 +2,7 @@ output_dir: "results.json"
 
 # Model
 model_tag: "espnet/libritts_encodec_16k"
-n_codes: 8
+n_codebooks:
 
 # Quantization
 quantize_model: True
