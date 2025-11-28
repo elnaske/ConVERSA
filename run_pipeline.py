@@ -1,8 +1,10 @@
 from espnet2.bin.gan_codec_inference import AudioCoding
 from torchaudio import load
+import numpy as np
+from collections import defaultdict
 
 from src.metrics import get_model_size, get_bitrate_kbps, get_codebook_size, get_FLOPs, get_n_operations
-from src.utils import load_config, save_to_json
+from src.utils import load_config, save_to_json, parse_log
 
 def load_model(config: dict) -> AudioCoding:
     model = AudioCoding.from_pretrained(
@@ -16,7 +18,7 @@ def load_model(config: dict) -> AudioCoding:
 def main():
     # Parse config
     config = load_config()
-    out = {}
+    out = defaultdict(dict)
 
     # Load the model
     codec = load_model(config)
@@ -25,6 +27,7 @@ def main():
 
     n_codebooks = config["n_codebooks"] if config["n_codebooks"] else codec.model.codec.generator.quantizer.n_q
 
+    # Replace this with file from test set
     sample, fs = load("audio/s.wav")
 
     # Get general model info (name, bitrate, etc.)
@@ -34,7 +37,7 @@ def main():
     out["codebook_size"] = get_codebook_size(codec)
     out["kbps"] = get_bitrate_kbps(codec, inp=sample, fs=fs, n_q=n_codebooks)
     # Update function later to include all modules
-    out["Total_FLOPs"] = {}
+    # out["Total_FLOPs"] = {}
     out["Total_FLOPs"]["Encoder"] = get_FLOPs(no_quant.model.codec.generator.encoder, inp=sample)
 
     # Get model size
@@ -42,6 +45,14 @@ def main():
 
     # Run profiler (latency, etc.)
     # ...
+    # out["latency"] = {}
+    log_file = "log.txt"
+    fps, latencies, insizes = parse_log(log_file)
+    out["latency"]["points_per_second"] = np.mean(fps).item()
+    
+    rtfs = (insizes / fs) / latencies
+    out["latency"]["RTF"] = np.mean(rtfs).item()
+
 
     # Get operations per second
     out["n_operations"] = get_n_operations(codec, inp=sample)
