@@ -22,8 +22,10 @@ min() {
 }
 
 # Configs, will go in another file later
-espnet_root=./espnet
-cd ${espnet_root}/egs2/libritts/codec1
+CWD="$(pwd)"
+espnet_root=/espnet
+recipe_dir=${CWD}${espnet_root}/egs2/libritts/codec1
+cd ${recipe_dir}
 
 model_tag=espnet/libritts_encodec_16k
 python=python3
@@ -44,6 +46,10 @@ inference_config=""
 inference_args="--model_tag "${model_tag}" --quantize_model True"
 inference_model=${model_tag}
 gpu_inference=false
+
+scoring_config=conf/score.yaml
+scoring_args=""
+scoring_tag=""
 
 log "$0 $*"
 # Save command line args for logging (they will be lost after utils/parse_options.sh)
@@ -70,6 +76,18 @@ if [ -z "${inference_tag}" ]; then
         inference_tag+="$(echo "${inference_args}" | sed -e "s/--/\_/g" -e "s/[ |=]//g")"
     fi
     inference_tag+="_$(echo "${inference_model}" | sed -e "s/\//_/g" -e "s/\.[^.]*$//g")"
+fi
+
+if [ -z "${scoring_tag}" ]; then
+    if [ -n "${scoring_config}" ]; then
+        scoring_tag="$(basename "${scoring_config}" .yaml)"
+    else
+        scoring_tag=scoring
+    fi
+    # Add overwritten arg's info
+    if [ -n "${scoring_args}" ]; then
+        scoring_tag+="$(echo "${scoring_args}" | sed -e "s/--/\_/g" -e "s/[ |=]//g")"
+    fi
 fi
 
 if ${gpu_inference}; then
@@ -104,51 +122,63 @@ for dset in ${test_sets}; do
     # 0. Copy feats_type
     cp "${_data}/feats_type" "${_dir}/feats_type"
 
-    # 1. Split the key file
-    # key_file=${_data}/wav.scp
-    # split_scps=""
-    # _nj=$(min "${inference_nj}" "$(<${key_file} wc -l)")
-    # for n in $(seq "${_nj}"); do
-    #     split_scps+=" ${_logdir}/keys.${n}.scp"
-    # done
-    # # shellcheck disable=SC2086
-    # utils/split_scp.pl "${key_file}" ${split_scps}
-
-    ${python} -m espnet2.bin.gan_codec_inference \
+    PYTHONPATH=${CWD} ${python} -m src.bin.pipeline \
             --ngpu "${_ngpu}" \
-            --data_path_and_name_and_type ${_data}/${_scp},audio,${_type} \
-            --output_dir "${_logdir}"/output.JOB \
-            ${_opts} ${inference_args} 2> ~/git/ConVERSA/log.txt
-
-    # 2. Submit decoding jobs
-    # log "Decoding started... log: '${_logdir}/codec_inference.*.log'"
-    # shellcheck disable=SC2046,SC2086
-    # ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/codec_inference.JOB.log \
-    #     ${python} -m espnet2.bin.gan_codec_inference \
-    #         --ngpu "${_ngpu}" \
-    #         --data_path_and_name_and_type ${_data}/${_scp},audio,${_type} \
-    #         --key_file "${_logdir}"/keys.JOB.scp \
-    #         --output_dir "${_logdir}"/output.JOB \
-    #         ${_opts} ${inference_args} || { cat $(grep -l -i error "${_logdir}"/codec_inference.*.log) ; exit 1; }
-    #         # Add these back in later
-    #         # --model_file "${codec_exp}"/"${inference_model}" \
-    #         # --train_config "${codec_exp}"/config.yaml \
+            --data_path_and_name_and_type ${recipe_dir}/${_data}/${_scp},audio,${_type} \
+            --output_dir "${_logdir}"/output \
+            ${_opts} ${inference_args}
 
     # 3. Concatenates the output files from each jobs
-    # if [ -e "${_logdir}/output.${_nj}/codes" ]; then
-    #     mkdir -p "${_dir}"/codes
-    #     for i in $(seq "${_nj}"); do
-    #             cat "${_logdir}/output.${i}/codes/feats.scp"
-    #     done | LC_ALL=C sort -k1 > "${_dir}/codes/feats.scp"
-    # fi
-    # if [ -e "${_logdir}/output.${_nj}/wav" ]; then
-    #     mkdir -p "${_dir}"/wav
-    #     for i in $(seq "${_nj}"); do
-    #         mv -u "${_logdir}/output.${i}"/wav/*.wav "${_dir}"/wav
-    #         rm -rf "${_logdir}/output.${i}"/wav
-    #     done
-    #     find "${_dir}/wav" -name "*.wav" | while read -r line; do
-    #         echo "$(basename "${line}" .wav) ${line}"
-    #     done | LC_ALL=C sort -k1 > "${_dir}/wav/wav.scp"
-    # fi
+    if [ -e "${_logdir}/output/codes" ]; then
+        mkdir -p "${_dir}"/codes
+        cat "${_logdir}/output/codes/feats.scp" | LC_ALL=C sort -k1 > "${_dir}/codes/feats.scp"
+    fi
+    if [ -e "${_logdir}/output/wav" ]; then
+        mkdir -p "${_dir}"/wav
+        mv -u "${_logdir}/output"/wav/*.wav "${_dir}"/wav
+        rm -rf "${_logdir}/output"/wav
+
+        find "${_dir}/wav" -name "*.wav" | while read -r line; do
+            echo "$(basename "${line}" .wav) ${line}"
+        done | LC_ALL=C sort -k1 > "${_dir}/wav/wav.scp"
+    fi
 done
+
+for dset in ${test_sets}; do
+    _data="${data_feats}/${dset}"
+    _gt_wavscp="${_data}/wav.scp"
+    _dir="${codec_exp}/${inference_tag}/${dset}"
+    _gen_wavscp="${_dir}/wav/wav.scp"
+
+    log "Begin evaluation on ${dset}, results are written under ${_dir}"
+
+    # 1. Split the key file
+    _scoredir="${_dir}/${scoring_tag}"
+    _logdir="${_scoredir}/log"
+    mkdir -p ${_scoredir}
+    mkdir -p ${_logdir}
+
+    # Get the minimum number among ${nj} and the number lines of input files
+    _nj=$(min "${inference_nj}" "$(<${_gen_wavscp} wc -l)" )
+
+    # 3. Submit jobs
+    log "Evaluation started... log: '${_logdir}/codec_evaluate.log'"
+    # shellcheck disable=SC2046,SC2086
+    ${python} -m versa.bin.scorer \
+        --pred "${_dir}"/wav/wav.scp \
+        --gt "${_gt_wavscp}" \
+        --output_file "${_logdir}/result.txt" \
+        --score_config "${scoring_config}" \
+        ${scoring_args}
+
+    # # 4. Aggregate the results
+    # ${python} pyscripts/utils/aggregate_eval.py \
+    #     --logdir "${_logdir}" \
+    #     --scoredir "${_scoredir}" \
+    #     --nj "${_nj}"
+
+done
+
+# 5. Show results
+echo "Result saved at ${_logdir}/result.txt"
+cat "${_logdir}/result.txt"
