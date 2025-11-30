@@ -1,4 +1,4 @@
-output_dir: "results.json"
+output_dir: "/home/elias/git/ConVERSA/results.json"
 
 # Model
 model_tag: "espnet/libritts_encodec_16k"

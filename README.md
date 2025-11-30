@@ -10,10 +10,10 @@ Supported metrics:
   - [x] Memory
 - Number of operations
   - [x] FLOPs (total number of operations)
-  - [ ] FLOPS (number of operations per second)
+  - [x] FLOPS (number of operations per second)
   - [x] MACS
 - Latency
-  - [ ] Inference time
-  - [ ] RTF
+  - [x] Inference time
+  - [x] RTF
 - Reconstruction
-  - [ ] VERSA metrics
+  - [x] VERSA metrics
