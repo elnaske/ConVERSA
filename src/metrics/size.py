@@ -2,14 +2,16 @@ import os
 import torch
 from espnet2.bin.gan_codec_inference import AudioCoding
 from typing import Dict
+import uuid
 
 def get_n_params(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 def get_size_mb(model: torch.nn.Module) -> int:
-    torch.save(model.state_dict(), "temp.pth")
-    size_mb = os.path.getsize("temp.pth") / (1024 * 1024)
-    os.remove("temp.pth")
+    temp = f"temp_{uuid.uuid4()}.pth"
+    torch.save(model.state_dict(), temp)
+    size_mb = os.path.getsize(temp) / (1024 * 1024)
+    os.remove(temp)
     return size_mb
 
 def get_model_size(model: AudioCoding) -> Dict[str, Dict[str, int]]:

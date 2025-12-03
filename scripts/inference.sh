@@ -122,22 +122,39 @@ for dset in ${test_sets}; do
     # 0. Copy feats_type
     cp "${_data}/feats_type" "${_dir}/feats_type"
 
-    PYTHONPATH=${CWD} ${python} -m src.bin.pipeline \
+    # 1. Split the key file
+    key_file=${_data}/wav.scp
+    split_scps=""
+    _nj=$(min "${inference_nj}" "$(<${key_file} wc -l)")
+    echo Number of jobs: ${_nj}
+    for n in $(seq "${_nj}"); do
+        split_scps+=" ${_logdir}/keys.${n}.scp"
+    done
+    # shellcheck disable=SC2086
+    utils/split_scp.pl "${key_file}" ${split_scps}
+
+    log "Decoding started... log: '${_logdir}/codec_inference.*.log'"
+    # shellcheck disable=SC2046,SC2086
+    ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/codec_inference.JOB.log \
+        PYTHONPATH=${CWD} ${python} -m src.bin.pipeline \
             --ngpu "${_ngpu}" \
             --data_path_and_name_and_type ${recipe_dir}/${_data}/${_scp},audio,${_type} \
-            --output_dir "${_logdir}"/output \
-            ${_opts} ${inference_args}
+            --key_file "${_logdir}"/keys.JOB.scp \
+            --output_dir "${_logdir}"/output.JOB \
+            ${_opts} ${inference_args} || { cat $(grep -l -i error "${_logdir}"/codec_inference.*.log) ; exit 1; }
 
-    # 3. Concatenates the output files from each jobs
-    if [ -e "${_logdir}/output/codes" ]; then
+    if [ -e "${_logdir}/output.${_nj}/codes" ]; then
         mkdir -p "${_dir}"/codes
-        cat "${_logdir}/output/codes/feats.scp" | LC_ALL=C sort -k1 > "${_dir}/codes/feats.scp"
+        for i in $(seq "${_nj}"); do
+                cat "${_logdir}/output.${i}/codes/feats.scp"
+        done | LC_ALL=C sort -k1 > "${_dir}/codes/feats.scp"
     fi
-    if [ -e "${_logdir}/output/wav" ]; then
+    if [ -e "${_logdir}/output.${_nj}/wav" ]; then
         mkdir -p "${_dir}"/wav
-        mv -u "${_logdir}/output"/wav/*.wav "${_dir}"/wav
-        rm -rf "${_logdir}/output"/wav
-
+        for i in $(seq "${_nj}"); do
+            mv -u "${_logdir}/output.${i}"/wav/*.wav "${_dir}"/wav
+            rm -rf "${_logdir}/output.${i}"/wav
+        done
         find "${_dir}/wav" -name "*.wav" | while read -r line; do
             echo "$(basename "${line}" .wav) ${line}"
         done | LC_ALL=C sort -k1 > "${_dir}/wav/wav.scp"
@@ -160,25 +177,35 @@ for dset in ${test_sets}; do
 
     # Get the minimum number among ${nj} and the number lines of input files
     _nj=$(min "${inference_nj}" "$(<${_gen_wavscp} wc -l)" )
+    _nj=1
+
+    key_file=${_gen_wavscp}
+    split_scps=""
+    for n in $(seq "${_nj}"); do
+        split_scps+=" ${_logdir}/test.${n}.scp"
+    done
+    # shellcheck disable=SC2086
+    utils/split_scp.pl "${key_file}" ${split_scps}
 
     # 3. Submit jobs
-    log "Evaluation started... log: '${_logdir}/codec_evaluate.log'"
+    log "Evaluation started... log: '${_logdir}/codec_evaluate.*.log'"
     # shellcheck disable=SC2046,SC2086
-    ${python} -m versa.bin.scorer \
-        --pred "${_dir}"/wav/wav.scp \
-        --gt "${_gt_wavscp}" \
-        --output_file "${_logdir}/result.txt" \
-        --score_config "${scoring_config}" \
-        ${scoring_args}
+    ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/codec_evaluate.JOB.log \
+        ${python} -m versa.bin.scorer \
+            --pred "${_logdir}"/test.JOB.scp \
+            --gt "${_gt_wavscp}" \
+            --output_file "${_logdir}/result.JOB.txt" \
+            --score_config "${scoring_config}" \
+            ${scoring_args} || { cat $(grep -l -i error "${_logdir}"/codec_evaluate.*.log) ; exit 1; }
 
-    # # 4. Aggregate the results
-    # ${python} pyscripts/utils/aggregate_eval.py \
-    #     --logdir "${_logdir}" \
-    #     --scoredir "${_scoredir}" \
-    #     --nj "${_nj}"
+    # 4. Aggregate the results
+    ${python} pyscripts/utils/aggregate_eval.py \
+        --logdir "${_logdir}" \
+        --scoredir "${_scoredir}" \
+        --nj "${_nj}"
 
 done
 
 # 5. Show results
-echo "Result saved at ${_logdir}/result.txt"
-cat "${_logdir}/result.txt"
+echo "Result saved at ${_scoredir}/avg_result.txt"
+cat "${_scoredir}/avg_result.txt"

@@ -114,12 +114,10 @@ def inference(
 
     benchmark["n_codebooks"] = n_codebooks
     benchmark["fs"] = audio_coding.fs
-    benchmark["codebook_size"] = get_codebook_size(audio_coding)
-    benchmark["model_size"] = get_model_size(audio_coding)
+    benchmark["complexity"]["codebook_size"] = get_codebook_size(audio_coding)
+    benchmark["complexity"]["model_size"] = get_model_size(audio_coding)
 
     # ===== Number of operations (FLOPS, MACS) =====
-    # benchmark["n_operations"] = get_n_operations(audio_coding, inp=sample)
-
     FLOPs = defaultdict(list)
     fps = defaultdict(list)
     rtf = defaultdict(list)
@@ -129,6 +127,7 @@ def inference(
     output_dir_path = Path(output_dir)
     (output_dir_path / "codec").mkdir(parents=True, exist_ok=True)
     (output_dir_path / "wav").mkdir(parents=True, exist_ok=True)
+    (output_dir_path / "benchmark").mkdir(parents=True, exist_ok=True)
 
     
     with NpyScpWriter(
@@ -166,7 +165,7 @@ def inference(
                 fps[k] += [insize / latency]
                 rtf[k] += [(insize / audio_coding.fs) / latency]
 
-            FLOPs["encoder"] += [get_FLOPs(audio_coding.model.codec.generator.encoder, batch["audio"][None, None, :]) / latency]
+            FLOPs["encoder"] += [get_FLOPs(audio_coding.model.codec.generator.encoder, batch["audio"][None, None, :]) / insize]
             
             if output_dict.get("resyn_audio") is not None:
                 wav = output_dict["resyn_audio"].squeeze()
@@ -175,7 +174,7 @@ def inference(
                 fps["decoder"] += [insize / latency]
                 rtf["decoder"] += [(insize / audio_coding.fs) / latency]
 
-                FLOPs["decoder"] += [get_FLOPs(audio_coding.model.codec.generator.decoder, audio_coding.model.codec.generator.quantizer.decode(codes)) / latency]
+                FLOPs["decoder"] += [get_FLOPs(audio_coding.model.codec.generator.decoder, audio_coding.model.codec.generator.quantizer.decode(codes)) / insize]
                 FLOPs["total"] += [FLOPs["encoder"][-1] + FLOPs["decoder"][-1]]
 
                 logging.info(
@@ -197,14 +196,13 @@ def inference(
     if output_dict.get("resyn_audio") is None:
         shutil.rmtree(output_dir_path / "wav")
 
-    # Latency
-    benchmark["latency"]["frames_per_second"] = {k: np.array(fps[k]).mean().item() for k in events.keys()}
-    benchmark["latency"]["rtf"] = {k: np.array(rtf[k]).mean().item() for k in events.keys()}
-    benchmark["latency"]["FLOPs"] = {k: np.array(FLOPs[k]).mean().item() for k in events.keys()}
+    benchmark["latency"]["frames_per_second"] = {k: fps[k] for k in events.keys()}
+    benchmark["latency"]["rtf"] = {k: rtf[k] for k in events.keys()}
+    benchmark["complexity"]["FLOPs"] = {k: FLOPs[k] for k in events.keys()}
 
 
     # Save benchmark results
-    save_to_json(benchmark, pipeline_config["output_dir"])
+    save_to_json(benchmark, f"{output_dir_path}/benchmark/results.json")
 
 def get_parser():
     """Get argument parser."""

@@ -2,6 +2,7 @@ espnet/
 audio/
 results.json
 log.txt
+paper/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
