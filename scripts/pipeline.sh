@@ -133,10 +133,16 @@ for dset in ${test_sets}; do
     # shellcheck disable=SC2086
     utils/split_scp.pl "${key_file}" ${split_scps}
 
+    log "Collecting general model info"
+    PYTHONPATH=${CWD} ${python} -m src.bin.model_info \
+        --ngpu "${_ngpu}" \
+        --output_dir "${_logdir}" \
+        ${_opts} ${inference_args} || { cat $(grep -l -i error "${_logdir}"/model_info.log) ; exit 1; }
+
     log "Decoding started... log: '${_logdir}/codec_inference.*.log'"
     # shellcheck disable=SC2046,SC2086
     ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/codec_inference.JOB.log \
-        PYTHONPATH=${CWD} ${python} -m src.bin.pipeline \
+        PYTHONPATH=${CWD} ${python} -m src.bin.inference \
             --ngpu "${_ngpu}" \
             --data_path_and_name_and_type ${recipe_dir}/${_data}/${_scp},audio,${_type} \
             --key_file "${_logdir}"/keys.JOB.scp \
@@ -198,7 +204,7 @@ for dset in ${test_sets}; do
             --score_config "${scoring_config}" \
             ${scoring_args} || { cat $(grep -l -i error "${_logdir}"/codec_evaluate.*.log) ; exit 1; }
 
-    # 4. Aggregate the results
+    # 4. Aggregate the VERSA results
     ${python} pyscripts/utils/aggregate_eval.py \
         --logdir "${_logdir}" \
         --scoredir "${_scoredir}" \
@@ -206,6 +212,13 @@ for dset in ${test_sets}; do
 
 done
 
+# Aggregate results from all steps
+_logdir=${CWD}/espnet/egs2/libritts/codec1/exp/codec_1/inference_model_tagespnet/libritts_encodec_16k_quantize_modelTrue_espnet_libritts_encodec_16k/test-clean/
+_scoredir=${CWD}
+
+cd ${CWD}
+
+python3 -m src.bin.aggregate_results --logdir ${_logdir} --scoredir ${_scoredir}
+
 # 5. Show results
-echo "Result saved at ${_scoredir}/avg_result.txt"
-cat "${_scoredir}/avg_result.txt"
+echo "Result saved at ${_scoredir}/results.json"

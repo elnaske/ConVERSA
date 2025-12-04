@@ -32,7 +32,6 @@ from espnet2.utils import config_argparse
 from espnet2.utils.types import float_or_none, str2bool, str2triple_str, str_or_none
 from espnet.utils.cli_utils import get_commandline_args
 
-from src.metrics import get_model_size, get_bitrate_kbps, get_codebook_size, get_FLOPs, get_n_operations
 from src.utils import load_config, save_to_json
 
 
@@ -106,22 +105,8 @@ def inference(
         allow_variable_data_keys=allow_variable_data_keys,
         inference=True,
     )
-    pipeline_config = load_config("../../../../config.yaml")
 
     benchmark = defaultdict(dict)
-    
-    n_codebooks = pipeline_config["n_codebooks"] if pipeline_config["n_codebooks"] else audio_coding.model.codec.generator.quantizer.n_q
-
-    benchmark["n_codebooks"] = n_codebooks
-    benchmark["fs"] = audio_coding.fs
-    benchmark["complexity"]["codebook_size"] = get_codebook_size(audio_coding)
-    benchmark["complexity"]["model_size"] = get_model_size(audio_coding)
-
-    # ===== Number of operations (FLOPS, MACS) =====
-    FLOPs = defaultdict(list)
-    fps = defaultdict(list)
-    rtf = defaultdict(list)
-    # ==========================
 
     # 4. Start for-loop
     output_dir_path = Path(output_dir)
@@ -143,42 +128,24 @@ def inference(
             # because inference() requires 1-seq, not mini-batch.
             batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
 
-            if i == 1:
-                benchmark["kbps"] = get_bitrate_kbps(audio_coding, inp=batch["audio"], fs=audio_coding.fs, n_q=n_codebooks)
-
-            # ==== Run profiler ====
             with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True) as prof:
                 with record_function("total"):
                     with record_function("encoder"):
                         codes = audio_coding(**batch, encode_only=True)["codes"]
                     with record_function("decoder"):
                         output_dict = audio_coding.decode(codes)
-
+            events = {evt.key: evt for evt in prof.key_averages() if evt.key in ["total", "encoder", "decoder"]}
+            
             output_dict.update(codes=codes)
 
             key = keys[0]
             insize = next(iter(batch.values())).size(0) + 1
-
-            events = {evt.key: evt for evt in prof.key_averages() if evt.key in ["total", "encoder", "decoder"]}
-            for k in ["total", "encoder"]:
-                latency = events[k].cpu_time / 1e6
-                fps[k] += [insize / latency]
-                rtf[k] += [(insize / audio_coding.fs) / latency]
-
-            FLOPs["encoder"] += [get_FLOPs(audio_coding.model.codec.generator.encoder, batch["audio"][None, None, :]) / insize]
             
             if output_dict.get("resyn_audio") is not None:
                 wav = output_dict["resyn_audio"].squeeze()
 
-                latency = events["decoder"].cpu_time / 1e6
-                fps["decoder"] += [insize / latency]
-                rtf["decoder"] += [(insize / audio_coding.fs) / latency]
-
-                FLOPs["decoder"] += [get_FLOPs(audio_coding.model.codec.generator.decoder, audio_coding.model.codec.generator.quantizer.decode(codes)) / insize]
-                FLOPs["total"] += [FLOPs["encoder"][-1] + FLOPs["decoder"][-1]]
-
                 logging.info(
-                    f"({i}/?) {key} {fps["total"][-1]:.1f} points / sec."
+                    f"({i}/?) {key} finished."
                 )
                 sf.write(
                     f"{output_dir_path}/wav/{key}.wav",
@@ -190,19 +157,30 @@ def inference(
             if output_dict.get("codes") is not None:
                 codec_writer[key] = output_dict["codes"].cpu().numpy()
 
+            latencies = {}
+            fps = {}
+            rtf = {}
+            for module, evt in events.items():
+                latency = evt.cpu_time / 1e6 # in seconds
+                latencies[module] = latency
+                fps[module] = insize / latency
+                rtf[module] = (insize / audio_coding.fs) / latency
+
+            for module in ["total", "encoder", "decoder"]:
+                benchmark[key][module] = {
+                    "latency":  latencies[module],
+                    "samples_per_second": fps[module],
+                    "RTF": rtf[module]
+                }
+
     # remove files if those are not included in output dict
     if output_dict.get("codes") is None:
         shutil.rmtree(output_dir_path / "codes")
     if output_dict.get("resyn_audio") is None:
         shutil.rmtree(output_dir_path / "wav")
 
-    benchmark["latency"]["frames_per_second"] = {k: fps[k] for k in events.keys()}
-    benchmark["latency"]["rtf"] = {k: rtf[k] for k in events.keys()}
-    benchmark["complexity"]["FLOPs"] = {k: FLOPs[k] for k in events.keys()}
-
-
     # Save benchmark results
-    save_to_json(benchmark, f"{output_dir_path}/benchmark/results.json")
+    save_to_json(benchmark, (output_dir_path / "benchmark" / "results.json"))
 
 def get_parser():
     """Get argument parser."""
