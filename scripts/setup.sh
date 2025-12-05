@@ -18,6 +18,7 @@ make
 
 source venv/bin/activate
 
+echo Installing VERSA...
 bash installers/install_versa.sh
 
 # Install local ESPNet
@@ -29,9 +30,11 @@ pip install fvcore ptflops
 
 deactivate
 
-echo Installed ESPNet and Versa
+echo Successfully installed ESPNet and Versa
 
 # Pull LibriTTS test-clean
 echo Prepared test set...
 cd ${project_root}
 bash scripts/data_prep.sh
+
+echo Setup complete
