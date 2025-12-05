@@ -77,12 +77,17 @@ def get_model_info(
         device=device,
         seed=seed,
         always_fix_seed=always_fix_seed,
+    )
+    audio_coding_base = AudioCoding.from_pretrained(
+        model_tag=model_tag,
+        **audio_coding_kwargs,
+    )
+
+    audio_coding_quantized = AudioCoding.from_pretrained(
+        model_tag=model_tag,
         quantize_model=quantize_model,
         quantize_modules=quantize_modules,
         quantize_dtype=quantize_dtype,
-    )
-    audio_coding = AudioCoding.from_pretrained(
-        model_tag=model_tag,
         **audio_coding_kwargs,
     )
 
@@ -91,13 +96,16 @@ def get_model_info(
     benchmark = defaultdict(dict)
 
     benchmark["model_tag"] = model_tag
-    benchmark["precision"] = quantize_dtype if quantize_model else "float32"
-    benchmark["fs"] = audio_coding.fs
-    benchmark["n_codebooks"] = pipeline_config["n_codebooks"] if pipeline_config["n_codebooks"] else get_n_codebooks(audio_coding)
-    benchmark["codebook_size"] = get_codebook_size(audio_coding)
-    benchmark["model_size"] = get_model_size(audio_coding)
-    benchmark["kbps"] = get_bitrate_kbps(audio_coding)
-    benchmark["FLOPs_per_sample"] = get_FLOPs(audio_coding)
+    benchmark["quantized"] = quantize_model
+    if quantize_model:
+        benchmark["quantize_modules"] = quantize_modules
+        benchmark["dtype"] = quantize_dtype
+    benchmark["fs"] = audio_coding_base.fs
+    benchmark["n_codebooks"] = pipeline_config["n_codebooks"] if pipeline_config["n_codebooks"] else get_n_codebooks(audio_coding_base)
+    benchmark["codebook_size"] = get_codebook_size(audio_coding_base)
+    benchmark["kbps"] = get_bitrate_kbps(audio_coding_base)
+    benchmark["model_size"] = get_model_size(audio_coding_quantized) # Need to update this to only calculate #params for base model (quantization reduces PyTorch params but not weights)
+    benchmark["FLOPs_per_sample"] = get_FLOPs(audio_coding_base) # FLOPs don't change
 
     output_dir_path = Path(output_dir)
     (output_dir_path / "benchmark").mkdir(parents=True, exist_ok=True)

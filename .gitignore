@@ -1,5 +1,6 @@
 espnet/
 audio/
+exp/
 results.json
 log.txt
 paper/

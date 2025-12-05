@@ -22,34 +22,7 @@ min() {
 }
 
 # Configs, will go in another file later
-CWD="$(pwd)"
-espnet_root=/espnet
-recipe_dir=${CWD}${espnet_root}/egs2/libritts/codec1
 cd ${recipe_dir}
-
-model_tag=espnet/libritts_encodec_16k
-python=python3
-
-feats_type=raw
-data_feats=dump/raw
-test_sets=test-clean
-nj=32
-inference_nj=32
-audio_format=flac
-fs=16000
-
-expdir=exp
-tag=1
-codec_exp="${expdir}/codec_${tag}"
-inference_tag=""
-inference_config=""
-inference_args="--model_tag "${model_tag}" --quantize_model True"
-inference_model=${model_tag}
-gpu_inference=false
-
-scoring_config=conf/score.yaml
-scoring_args=""
-scoring_tag=""
 
 log "$0 $*"
 # Save command line args for logging (they will be lost after utils/parse_options.sh)
@@ -111,22 +84,24 @@ else
     _type=sound
 fi
 
-mkdir -p "${codec_exp}/${inference_tag}"
+# mkdir -p "${codec_exp}/${inference_tag}"
+mkdir -p "${codec_exp}/${model}/${quantize_model}/${quantize_dtype}"
 
 for dset in ${test_sets}; do
     _data="${data_feats}/${dset}"
-    _dir="${codec_exp}/${inference_tag}/${dset}"
+    # _dir="${codec_exp}/${inference_tag}/${dset}"
+    _dir="${codec_exp}/${model}/${quantize_model}/${quantize_dtype}"
     _logdir="${_dir}/log"
     mkdir -p "${_logdir}"
 
     # 0. Copy feats_type
-    cp "${_data}/feats_type" "${_dir}/feats_type"
+    # cp "${_data}/feats_type" "${_dir}/feats_type"
 
     # 1. Split the key file
     key_file=${_data}/wav.scp
     split_scps=""
     _nj=$(min "${inference_nj}" "$(<${key_file} wc -l)")
-    echo Number of jobs: ${_nj}
+
     for n in $(seq "${_nj}"); do
         split_scps+=" ${_logdir}/keys.${n}.scp"
     done
@@ -170,7 +145,9 @@ done
 for dset in ${test_sets}; do
     _data="${data_feats}/${dset}"
     _gt_wavscp="${_data}/wav.scp"
-    _dir="${codec_exp}/${inference_tag}/${dset}"
+    _gt_text="${_data}/text"
+    # _dir="${codec_exp}/${inference_tag}/${dset}"
+    _dir="${codec_exp}/${model}/${quantize_model}/${quantize_dtype}"
     _gen_wavscp="${_dir}/wav/wav.scp"
 
     log "Begin evaluation on ${dset}, results are written under ${_dir}"
@@ -182,8 +159,7 @@ for dset in ${test_sets}; do
     mkdir -p ${_logdir}
 
     # Get the minimum number among ${nj} and the number lines of input files
-    _nj=$(min "${inference_nj}" "$(<${_gen_wavscp} wc -l)" )
-    _nj=1
+    _nj=$(min "${eval_nj}" "$(<${_gen_wavscp} wc -l)" )
 
     key_file=${_gen_wavscp}
     split_scps=""
@@ -200,6 +176,7 @@ for dset in ${test_sets}; do
         ${python} -m versa.bin.scorer \
             --pred "${_logdir}"/test.JOB.scp \
             --gt "${_gt_wavscp}" \
+            --text "${_gt_text}" \
             --output_file "${_logdir}/result.JOB.txt" \
             --score_config "${scoring_config}" \
             ${scoring_args} || { cat $(grep -l -i error "${_logdir}"/codec_evaluate.*.log) ; exit 1; }
@@ -213,12 +190,7 @@ for dset in ${test_sets}; do
 done
 
 # Aggregate results from all steps
-_logdir=${CWD}/espnet/egs2/libritts/codec1/exp/codec_1/inference_model_tagespnet/libritts_encodec_16k_quantize_modelTrue_espnet_libritts_encodec_16k/test-clean/
-_scoredir=${CWD}
-
-cd ${CWD}
-
-python3 -m src.bin.aggregate_results --logdir ${_logdir} --scoredir ${_scoredir}
+PYTHONPATH=${CWD} ${python} -m src.bin.aggregate_results --logdir ${_dir} --scoredir ${_dir}
 
 # 5. Show results
-echo "Result saved at ${_scoredir}/results.json"
+echo "Result saved at ${_dir}/results.json"
