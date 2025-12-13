@@ -2,8 +2,10 @@ espnet/
 audio/
 exp/
 results.json
+*result*.txt
 log.txt
 paper/
+versa_cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

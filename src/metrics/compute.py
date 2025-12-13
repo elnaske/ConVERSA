@@ -35,8 +35,36 @@ def get_FLOPs(audio_coding: AudioCoding) -> dict:
 
     return flops
 
-def get_MACs(module: torch.nn.Module, inp: torch.Tensor):
-    macs, _ = get_model_complexity_info(module, tuple(inp.size()), as_strings=False, print_per_layer_stat=False)
+# def get_MACs(module: torch.nn.Module, inp: torch.Tensor):
+#     macs, _ = get_model_complexity_info(module, tuple(inp.size()), as_strings=False, print_per_layer_stat=False)
+#     return macs
+
+def get_MACs(audio_coding: AudioCoding) -> dict:
+    """
+    Calculates total number of multiply-add operations (MACs) per input sample.
+    """
+    codec = audio_coding.model.codec.generator
+    enc = audio_coding.model.codec.generator.encoder
+    dec = audio_coding.model.codec.generator.decoder
+    q = audio_coding.model.codec.generator.quantizer
+
+    fs = audio_coding.fs
+
+    sample = torch.rand(1, fs) # one second of audio
+    total_macs, _ = get_model_complexity_info(codec, tuple(sample.size()), as_strings=False, print_per_layer_stat=False)
+
+    enc_macs, _ = get_model_complexity_info(enc, tuple(sample.size()), as_strings=False, print_per_layer_stat=False)
+
+    codes = audio_coding(audio=sample.squeeze(), encode_only=True)["codes"]
+    codes_q = q.decode(codes).squeeze()
+    dec_macs, _ = get_model_complexity_info(dec, tuple(codes_q.size()), as_strings=False, print_per_layer_stat=False)
+
+    macs = {
+        "total": total_macs / fs,
+        "encoder": enc_macs / fs,
+        "decoder": dec_macs / fs,
+    }
+
     return macs
 
 # def get_n_operations(audio_coding: AudioCoding, inp: torch.Tensor):

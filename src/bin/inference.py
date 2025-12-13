@@ -9,6 +9,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+import json
 from typing import Any, Dict, Optional, Sequence, Tuple, Union, List
 
 import numpy as np
@@ -21,6 +22,7 @@ import torch.quantization
 from torch.profiler import profile, ProfilerActivity, record_function
 from collections import defaultdict
 from espnet2.bin.gan_codec_inference import AudioCoding
+from torchaudio.transforms import Resample
 
 from espnet2.fileio.npy_scp import NpyScpWriter
 from espnet2.gan_codec.dac import DAC
@@ -32,8 +34,7 @@ from espnet2.utils import config_argparse
 from espnet2.utils.types import float_or_none, str2bool, str2triple_str, str_or_none
 from espnet.utils.cli_utils import get_commandline_args
 
-from src.utils import load_config, save_to_json
-
+from src.utils import load_config
 
 @typechecked
 def inference(
@@ -53,9 +54,10 @@ def inference(
     encode_only: bool,
     always_fix_seed: bool,
     allow_variable_data_keys: bool,
-    quantize_model: bool = False,
-    quantize_modules: List[str] = ["Linear"],
-    quantize_dtype: str = "qint8",
+    quantize_model: Optional[bool],
+    quantize_modules: Optional[List[str]],
+    quantize_dtype: Optional[str],
+    benchmark_config: Optional[str],
 ):
     """Run speech coding inference."""
     if batch_size > 1:
@@ -71,6 +73,9 @@ def inference(
         device = "cuda"
     else:
         device = "cpu"
+
+    config = load_config(benchmark_config)
+    n_q = config["n_codebooks"] if config["n_codebooks"] else -1
 
     # 1. Set random-seed
     set_all_random_seed(seed)
@@ -106,7 +111,13 @@ def inference(
         inference=True,
     )
 
-    benchmark = defaultdict(dict)
+    # Quick fix
+    resample = Resample(24000, 16000)
+    
+    # Profiler activities
+    activities = [ProfilerActivity.CPU]
+    if ngpu:
+        activities += [ProfilerActivity.CUDA]
 
     # 4. Start for-loop
     output_dir_path = Path(output_dir)
@@ -128,14 +139,25 @@ def inference(
             # because inference() requires 1-seq, not mini-batch.
             batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
 
-            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True) as prof:
-                with record_function("total"):
-                    with record_function("encoder"):
-                        codes = audio_coding(**batch, encode_only=True)["codes"]
-                    with record_function("decoder"):
-                        output_dict = audio_coding.decode(codes)
-            events = {evt.key: evt for evt in prof.key_averages() if evt.key in ["total", "encoder", "decoder"]}
+            batch["audio"] = resample(batch["audio"])
+
+            # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True) as prof:
+            #     with record_function("total"):
+            #         with record_function("encoder"):
+            #             codes = audio_coding(**batch, encode_only=True)["codes"][:n_q]
+            #         with record_function("decoder"):
+            #             output_dict = audio_coding.decode(codes)
+            # events = {evt.key: evt for evt in prof.key_averages() if evt.key in ["total", "encoder", "decoder"]}
             
+            start_time = time.perf_counter()
+            codes = audio_coding(**batch, encode_only=True)["codes"][:n_q]
+            enc_latency = time.perf_counter() - start_time
+
+            start_time = time.perf_counter()
+            output_dict = audio_coding.decode(codes)
+            dec_latency = time.perf_counter() - start_time
+            total_latency = enc_latency + dec_latency
+
             output_dict.update(codes=codes)
 
             key = keys[0]
@@ -157,30 +179,29 @@ def inference(
             if output_dict.get("codes") is not None:
                 codec_writer[key] = output_dict["codes"].cpu().numpy()
 
-            latencies = {}
-            fps = {}
-            rtf = {}
-            for module, evt in events.items():
-                latency = evt.cpu_time / 1e6 # in seconds
-                latencies[module] = latency
-                fps[module] = insize / latency
-                rtf[module] = (insize / audio_coding.fs) / latency
+            benchmark = defaultdict(dict)
+            benchmark["key"] = key
 
-            for module in ["total", "encoder", "decoder"]:
-                benchmark[key][module] = {
-                    "latency":  latencies[module],
-                    "samples_per_second": fps[module],
-                    "RTF": rtf[module]
-                }
+            # for module, evt in events.items():
+            #     latency = evt.cpu_time / 1e6 # in seconds
+            #     benchmark[module]["latency"] = latency 
+            #     benchmark[module]["samples_per_second"] = insize / (latency + 1e-6)
+            #     benchmark[module]["RTF"] = (insize / audio_coding.fs) / (latency + 1e-6)
+            #     benchmark[module]["CPU_mem"] = evt.cpu_memory_usage
+
+            for module, latency in [("total", total_latency), ("encoder", enc_latency), ("decoder", dec_latency)]:
+                benchmark[module]["latency"] = latency 
+                benchmark[module]["samples_per_second"] = insize / (latency + 1e-6)
+                benchmark[module]["RTF"] = (insize / audio_coding.fs) / (latency + 1e-6)
+
+            with open((output_dir_path / "benchmark" / "results.txt"), "a") as f:
+                f.write(json.dumps(benchmark)+"\n")
 
     # remove files if those are not included in output dict
     if output_dict.get("codes") is None:
         shutil.rmtree(output_dir_path / "codes")
     if output_dict.get("resyn_audio") is None:
         shutil.rmtree(output_dir_path / "wav")
-
-    # Save benchmark results
-    save_to_json(benchmark, (output_dir_path / "benchmark" / "results.json"))
 
 def get_parser():
     """Get argument parser."""
@@ -232,6 +253,13 @@ def get_parser():
         type=int,
         default=1,
         help="The batch size for inference",
+    )
+
+    parser.add_argument(
+        "--benchmark_config",
+        type=str,
+        required=True,
+        help="Config file for benchmark"
     )
 
     group = parser.add_argument_group("Input data related")
