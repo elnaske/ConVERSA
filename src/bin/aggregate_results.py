@@ -18,7 +18,7 @@ def load_versa_avg_results(path: str):
 
     return out
 
-def load_versa_utt_results(path: str):
+def load_utt_results(path: str):
     with open(path, "r") as f:
         lines = f.readlines()
 
@@ -49,6 +49,18 @@ def aggregate_benchmark(paths: list[str]) -> dict:
         out.update(res)
     return out
 
+def aggregate_benchmark_txt(paths: list[str], logdir: str) -> None:
+    out = ""
+    for path in paths:
+        with open(path, "r") as f:
+            lines = f.read()
+        out += lines
+    
+    with open(os.path.join(logdir, "log/benchmark/utt_result.txt"), "w") as f:
+        f.write(out)
+
+# def load_benchmark
+
 def compute_FLOPS(benchmark: dict, model_info: float) -> dict:
     """
     Computes the number of floating point operations per second (FLOPS) from the benchmark results and the FLOPs computed during the model information step.
@@ -56,7 +68,8 @@ def compute_FLOPS(benchmark: dict, model_info: float) -> dict:
     for key, modules in benchmark.items():
         for module, metrics in modules.items():
             FLOPS = model_info["FLOPs_per_sample"][module] * metrics["samples_per_second"]
-            metrics.update(FLOPS=FLOPS)
+            MACS = model_info["MACs_per_sample"][module] * metrics["samples_per_second"]
+            metrics.update(FLOPS=FLOPS, MACS=MACS)
     return benchmark
 
 def get_benchmark_avgs(benchmark: dict) -> dict:
@@ -103,15 +116,20 @@ def aggregate_results(logdir: str, scoredir: str):
     model_info = load_model_info(logdir)
     res["model_info"] = model_info
 
-    benchmark_paths = glob(os.path.join(logdir, "log/output.*/benchmark/results.json"))
-    benchmark = aggregate_benchmark(benchmark_paths)
+    benchmark_paths = glob(os.path.join(logdir, "log/output.*/benchmark/results.txt"))
+    aggregate_benchmark_txt(benchmark_paths, logdir)
+
+    # benchmark = aggregate_benchmark(benchmark_paths)
+    benchmark = load_utt_results(os.path.join(logdir, "log/benchmark/utt_result.txt"))
     benchmark = compute_FLOPS(benchmark, model_info)
 
-    res["averages"]["benchmark"] = get_benchmark_avgs(benchmark)
-    res["utterances"]["benchmark"] = benchmark
+    res["benchmark"] = get_benchmark_avgs(benchmark)
+    # res["averages"]["benchmark"] = get_benchmark_avgs(benchmark)
+    # res["utterances"]["benchmark"] = benchmark
 
-    res["averages"]["VERSA"] = load_versa_avg_results(os.path.join(logdir, "score/avg_result.txt"))
-    res["utterances"]["VERSA"] = load_versa_utt_results(os.path.join(logdir, "score/utt_result.txt"))
+    res["VERSA"] = load_versa_avg_results(os.path.join(logdir, "score/avg_result.txt"))
+    # res["averages"]["VERSA"] = load_versa_avg_results(os.path.join(logdir, "score/avg_result.txt"))
+    # res["utterances"]["VERSA"] = load_utt_results(os.path.join(logdir, "score/utt_result.txt"))
 
     save_to_json(res, os.path.join(scoredir, "results.json"))
 

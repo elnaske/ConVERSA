@@ -27,7 +27,7 @@ from espnet2.utils import config_argparse
 from espnet2.utils.types import float_or_none, str2bool, str2triple_str, str_or_none
 from espnet.utils.cli_utils import get_commandline_args
 
-from src.metrics import get_model_size, get_bitrate_kbps, get_codebook_size, get_n_codebooks, get_FLOPs
+from src.metrics import get_model_size, get_bitrate_kbps, get_codebook_size, get_n_codebooks, get_FLOPs, get_MACs
 from src.utils import load_config, save_to_json
 
 
@@ -46,9 +46,10 @@ def get_model_info(
     target_bandwidth: Optional[float],
     encode_only: bool,
     always_fix_seed: bool,
-    quantize_model: bool = False,
-    quantize_modules: List[str] = ["Linear"],
-    quantize_dtype: str = "qint8",
+    quantize_model: bool,
+    quantize_modules: List[str],
+    quantize_dtype: str,
+    benchmark_config: str,
 ):
     """Run speech coding inference."""
     if batch_size > 1:
@@ -91,7 +92,7 @@ def get_model_info(
         **audio_coding_kwargs,
     )
 
-    pipeline_config = load_config("../../../../config.yaml")
+    pipeline_config = load_config(benchmark_config)
 
     benchmark = defaultdict(dict)
 
@@ -103,9 +104,10 @@ def get_model_info(
     benchmark["fs"] = audio_coding_base.fs
     benchmark["n_codebooks"] = pipeline_config["n_codebooks"] if pipeline_config["n_codebooks"] else get_n_codebooks(audio_coding_base)
     benchmark["codebook_size"] = get_codebook_size(audio_coding_base)
-    benchmark["kbps"] = get_bitrate_kbps(audio_coding_base)
+    benchmark["kbps"] = get_bitrate_kbps(audio_coding_base, n_q=pipeline_config["n_codebooks"])
     benchmark["model_size"] = get_model_size(audio_coding_quantized) # Need to update this to only calculate #params for base model (quantization reduces PyTorch params but not weights)
     benchmark["FLOPs_per_sample"] = get_FLOPs(audio_coding_base) # FLOPs don't change
+    benchmark["MACs_per_sample"] = get_MACs(audio_coding_base) # MACs don't change
 
     output_dir_path = Path(output_dir)
     (output_dir_path / "benchmark").mkdir(parents=True, exist_ok=True)
@@ -162,6 +164,12 @@ def get_parser():
         type=int,
         default=1,
         help="The batch size for inference",
+    )
+    parser.add_argument(
+        "--benchmark_config",
+        type=str,
+        required=True,
+        help="Config file for benchmark"
     )
 
     group = parser.add_argument_group("The model configuration related")

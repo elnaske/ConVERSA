@@ -1,8 +1,6 @@
-output_dir: "/home/elias/git/ConVERSA/results.json"
-
 # Model
 model_tag: "espnet/libritts_encodec_16k"
-n_codebooks:
+n_codebooks: 8
 
 # Quantization
 quantize_model: True

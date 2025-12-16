@@ -23,8 +23,8 @@ trim_all_silence=true
 feats_type=raw
 data_feats=dump/raw
 dset=test-clean
-nj=32
-audio_format=flac
+nj=1
+audio_format=wav
 fs=16000
 
 log "$0 $*"

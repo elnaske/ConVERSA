@@ -20,8 +20,31 @@ min() {
   done
   echo "${a}"
 }
+SECONDS=0
 
 # Configs, will go in another file later
+python=python3
+
+feats_type=raw
+
+audio_format=wav
+fs=16000
+
+codec_exp="${expdir}/codec_${tag}"
+inference_tag=""
+inference_config=""
+inference_args="--model_tag "${model_tag}" --quantize_model ${quantize_model} --quantize_modules ${quantize_modules} --quantize_dtype ${quantize_dtype}"
+inference_model=${model_tag}
+gpu_inference=false
+gpu_eval=false
+
+scoring_args=""
+scoring_tag=""
+
+
+
+
+
 cd ${recipe_dir}
 
 log "$0 $*"
@@ -112,7 +135,11 @@ for dset in ${test_sets}; do
     PYTHONPATH=${CWD} ${python} -m src.bin.model_info \
         --ngpu "${_ngpu}" \
         --output_dir "${_logdir}" \
-        ${_opts} ${inference_args} || { cat $(grep -l -i error "${_logdir}"/model_info.log) ; exit 1; }
+        --benchmark_config ${benchmark_config} \
+        ${_opts} ${inference_args} 2> ${_logdir}/model_info.log || { cat $(grep -l -i error "${_logdir}"/model_info.log) ; exit 1; }
+
+    log "Model info collected. [elapsed=${SECONDS}s]"
+    SECONDS=0
 
     log "Decoding started... log: '${_logdir}/codec_inference.*.log'"
     # shellcheck disable=SC2046,SC2086
@@ -122,6 +149,7 @@ for dset in ${test_sets}; do
             --data_path_and_name_and_type ${recipe_dir}/${_data}/${_scp},audio,${_type} \
             --key_file "${_logdir}"/keys.JOB.scp \
             --output_dir "${_logdir}"/output.JOB \
+            --benchmark_config ${benchmark_config} \
             ${_opts} ${inference_args} || { cat $(grep -l -i error "${_logdir}"/codec_inference.*.log) ; exit 1; }
 
     if [ -e "${_logdir}/output.${_nj}/codes" ]; then
@@ -141,6 +169,20 @@ for dset in ${test_sets}; do
         done | LC_ALL=C sort -k1 > "${_dir}/wav/wav.scp"
     fi
 done
+
+log "Inference finished. [elapsed=${SECONDS}s]"
+
+if ${gpu_eval}; then
+    _cmd="${cuda_cmd}"
+    _ngpu=1
+    echo GPU evaluation
+else
+    _cmd="${decode_cmd}"
+    _ngpu=0
+    echo CPU evaluation
+fi
+
+SECONDS=0
 
 for dset in ${test_sets}; do
     _data="${data_feats}/${dset}"
@@ -188,6 +230,8 @@ for dset in ${test_sets}; do
         --nj "${_nj}"
 
 done
+
+log "Scoring finished. [elapsed=${SECONDS}s]"
 
 # Aggregate results from all steps
 PYTHONPATH=${CWD} ${python} -m src.bin.aggregate_results --logdir ${_dir} --scoredir ${_dir}
